@@ -6,6 +6,7 @@ require 'open3'
 require 'fileutils'
 require 'net/ssh'
 require 'net/scp'
+require 'zlib'
 
 class MyNode
 	### Initialize with default configuration
@@ -36,10 +37,13 @@ class MyNode
 		Net::SSH.start(@name, @user) do | session |
 			session.scp.download!(@config_path+@config_file, @copy_dir+@config_path)
 		end
+		return @copy_dir+@config_path+@config_file
 	end
         def collect_td_agent_log()
                 Net::SSH.start(@name, @user) do | session |
              		session.scp.download!(@td_agent_log_path, @copy_dir+@os_log_path, :recursive => true, :verbose => true)
+			files = session.exec!("ls -d #{@copy_dir+@td_agent_log_path}/* | grep #{@td_agent_log_file}")
+			return files.split()
 		end
         end
         def collect_sysctl_conf()
@@ -47,27 +51,41 @@ class MyNode
                         session.scp.download!(@sysctl_path+@sysctl_file, @copy_dir+@sysctl_path)
                         session.scp.download!(@sysctl_path+@sysctl_file, @prod_dir+@sysctl_path)
                 end
+		return @copy_dir+@sysctl_path+@sysctl_file
         end
         def collect_os_log()
                 Net::SSH.start(@name, @user) do | session |
                         session.scp.download!(@os_log_path+@os_log_file, @copy_dir+@os_log_path)
                         session.scp.download!(@os_log_path+@os_log_file, @prod_dir+@os_log_path)
                 end
+		return @copy_dir+@os_log_path+@os_log_file
         end
-	def mask_td_agent_conf()
+	def mask_td_agent_conf(input_file)
         	f = File.open(@prod_dir+@config_path+@config_file+'.mask', 'w')
-        	File.readlines(@copy_dir+@config_path+@config_file).each do |line|
+        	File.readlines(input_file).each do |line|
 			line_masked = mask_td_agent_conf_inspector(line)                	
                 	f.print(line_masked+"\n")
         	end
         	f.close
 	end
-        def mask_td_agent_log()
-                f = File.open(@prod_dir+@td_agent_log_path+@td_agent_log_file+'.mask', 'w')
-                File.readlines(@copy_dir+@td_agent_log_path+@td_agent_log_file).each do |line|
-                        line_masked = mask_td_agent_log_inspector(line)
-                        f.print(line_masked+"\n")
+        def mask_td_agent_log(input_file)
+		filename = input_file.split("/")[-1]
+                f = File.open(@prod_dir+@td_agent_log_path+filename+'.mask', 'w')
+		File.readlines(input_file).each do |line|
+                      	line_masked = mask_td_agent_log_inspector(line)
+                     	f.print(line_masked+"\n")
                 end
+                f.close
+        end
+	def mask_td_agent_log_gz(input_file)
+                filename = input_file.split("/")[-1]
+                f = File.open(@prod_dir+@td_agent_log_path+filename+'.mask', 'w')
+		gunzip_file = @copy_dir+@td_agent_log_path+'tmpfile'
+		system("gunzip --keep -c #{input_file} > #{gunzip_file}")
+		File.readlines(gunzip_file).each do |line|
+			line_masked = mask_td_agent_log_inspector(line)
+                        f.print(line_masked+"\n")
+                end   		
                 f.close
         end
 	def mask_td_agent_conf_inspector(line)
@@ -94,18 +112,23 @@ class MyNode
 		loop do
 			contents[i] = line.split()[i]
 			if contents[i].include? "host="
-				l = contents[i].split("=")
+				l = contents[i].split("=") ## Mask host=<ipaddress or hostname>
 				l[1] = 'ipv4_md5_'+Digest::MD5.hexdigest(l[1].gsub(/\"/){ '' }) if is_ipv4?(l[1].gsub(/\"/){ '' })
 				l[1] = 'fqdn_md5_'+Digest::MD5.hexdigest(l[1].gsub(/\"/){ '' }) if is_fqdn?(l[1].gsub(/\"/){ '' })
 				contents[i] = l.join("=")
-			elsif contents[i].include? ":"
+	                elsif contents[i].include? "bind=" ## Mask bind=<ipaddress or hostname>
+                                l = contents[i].split("=")
+                                l[1] = 'ipv4_md5_'+Digest::MD5.hexdigest(l[1].gsub(/\"/){ '' }) if is_ipv4?(l[1].gsub(/\"/){ '' })
+                                l[1] = 'fqdn_md5_'+Digest::MD5.hexdigest(l[1].gsub(/\"/){ '' }) if is_fqdn?(l[1].gsub(/\"/){ '' })
+                                contents[i] = l.join("=")
+			elsif contents[i].include? ":" ## Mask <ipaddress or hostname>:<port>
 				l = contents[i].split(":")
 				l[0] = 'ipv4_md5_'+Digest::MD5.hexdigest(l[0]) if is_ipv4?(l[0])
 				l[0] = 'fqdn_md5_'+Digest::MD5.hexdigest(l[0].gsub(/\'/){ '' }) if is_fqdn?(l[0].gsub(/\'/){ '' })
 				contents[i] = l.join(":")
-			elsif is_fqdn?(contents[i].gsub(/\"/){ '' })
+			elsif is_fqdn?(contents[i].gsub(/\"/){ '' }) ## Mask <ipaddress>
 				contents[i] = 'fqdn_md5_'+Digest::MD5.hexdigest(contents[i].gsub(/\"/){ '' })
-			elsif is_ipv4?(contents[i].gsub(/\"/){ '' })
+			elsif is_ipv4?(contents[i].gsub(/\"/){ '' }) ## Mask <hostname>
 				contents[i] = 'ipv4_md5_'+Digest::MD5.hexdigest(contents[i].gsub(/\"/){ '' })
 			end
 			i+=1
@@ -147,14 +170,24 @@ end
 ####
 
 node1 = MyNode.new('centos8101.demo.com')
-node1.collect_td_agent_log()
-node1.collect_td_agent_conf()
-node1.collect_sysctl_conf()
-node1.collect_os_log()
-node1.mask_td_agent_conf()
-node1.mask_td_agent_log()
-node1.collect_ulimit()
-node1.collect_ntp() 
+td_agent_log = node1.collect_td_agent_log()
+td_agent_conf = node1.collect_td_agent_conf()
+sysctl_conf =  node1.collect_sysctl_conf()
+os_log = node1.collect_os_log()
+node1.mask_td_agent_conf(td_agent_conf)
+p td_agent_log
+td_agent_log.each do | file |
+	filename = file.split("/")[-1]
+        if filename.include?(".gz")
+		node1.mask_td_agent_log_gz(file)
+	else
+		p filename 
+		node1.mask_td_agent_log(file)
+	end
+end
+
+#node1.collect_ulimit()
+#node1.collect_ntp() 
 
 #node2 = MyNode.new('centos8102.demo.com')
 #node2.collect_td_agent_log()
