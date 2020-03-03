@@ -1,0 +1,8 @@
+Tue Mar  3 12:32:47 EST 2020
+210 Number of sources = 4
+MS Name/IP address         Stratum Poll Reach LastRx Last sample               
+===============================================================================
+^+ li290-38.members.linode.>     2   9   377   119  +6693us[+6693us] +/-   59ms
+^+ ec2-34-194-39-113.comput>     2   9   377   270  -1613us[-1091us] +/-   89ms
+^+ vps5.ctyme.com                2   8   377   109   +267us[ +267us] +/-   36ms
+^* 144.172.126.201               2   9   377   162   -407us[ +126us] +/-   30ms
