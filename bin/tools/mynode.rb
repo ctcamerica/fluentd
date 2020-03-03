@@ -174,20 +174,19 @@ td_agent_log = node1.collect_td_agent_log()
 td_agent_conf = node1.collect_td_agent_conf()
 sysctl_conf =  node1.collect_sysctl_conf()
 os_log = node1.collect_os_log()
+
 node1.mask_td_agent_conf(td_agent_conf)
-p td_agent_log
 td_agent_log.each do | file |
 	filename = file.split("/")[-1]
         if filename.include?(".gz")
 		node1.mask_td_agent_log_gz(file)
-	else
+	elsif
 		p filename 
 		node1.mask_td_agent_log(file)
 	end
 end
-
-#node1.collect_ulimit()
-#node1.collect_ntp() 
+node1.collect_ulimit()
+node1.collect_ntp() 
 
 #node2 = MyNode.new('centos8102.demo.com')
 #node2.collect_td_agent_log()
